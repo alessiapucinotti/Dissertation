@@ -1,0 +1,139 @@
+"""
+build_dashboard.py
+==================================================================
+Premiumization Tolerance Dashboard — the operational artefact of
+the Framework (thesis §6.2). Reads the REAL pipeline outputs and
+renders a one-page dashboard.
+
+Run from the 'visualization and algorithm' folder (after the main
+pipeline has produced its JSONs):
+
+    python build_dashboard.py
+
+Inputs : pti_results.json, pti_results_hm.json, absa_results.json
+Outputs: dashboard.png   (figure for thesis §6.2)
+         dashboard.html  (self-contained, opens in any browser)
+==================================================================
+"""
+
+import os, json, base64
+from datetime import datetime
+import pandas as pd
+import matplotlib
+matplotlib.use("Agg")
+import matplotlib.pyplot as plt
+
+_DIR = os.path.dirname(os.path.abspath(__file__))
+
+# ---------- load real outputs ----------
+zara = pd.Series(json.load(open(os.path.join(_DIR, "pti_results.json")))["PTI_series"])
+zara.index = pd.to_datetime(zara.index)
+hm = pd.Series(json.load(open(os.path.join(_DIR, "pti_results_hm.json")))["PTI_series"])
+hm.index = pd.to_datetime(hm.index)
+absa = pd.DataFrame(json.load(open(os.path.join(_DIR, "absa_results.json"))))
+
+trend  = zara.rolling(4, min_periods=2).mean()
+trendh = hm.rolling(4, min_periods=2).mean()
+
+# ---------- framework quantities ----------
+BASE = 100.0
+last_q, last_v = zara.index[-1], float(zara.iloc[-1])
+last_t = float(trend.iloc[-1])
+post = zara[zara.index >= "2022-01-01"]
+bp = post[post < BASE]
+bp_date, bp_val = (bp.index[0], float(bp.iloc[0])) if len(bp) else (None, None)
+alert = last_t < BASE
+q_lab = lambda ts: f"Q{((ts.month-1)//3)+1} {ts.year}"
+
+# ---------- figure ----------
+fig = plt.figure(figsize=(13.5, 8.2))
+fig.suptitle("Premiumization Tolerance Dashboard — Zara", fontsize=15,
+             fontweight="bold", x=0.055, ha="left", y=0.975)
+fig.text(0.055, 0.935, f"quarterly monitoring · latest period {q_lab(last_q)} · "
+         f"generated {datetime.now():%d %b %Y}", fontsize=9, color="#666")
+
+gs = fig.add_gridspec(2, 3, left=0.055, right=0.97, top=0.80, bottom=0.07,
+                      hspace=0.45, wspace=0.28, width_ratios=[1.55, 1, 1])
+
+# KPI cards
+cards = [
+    (f"{last_v:.1f}", f"PTI · {q_lab(last_q)}", "#2f6fb0"),
+    (f"{last_t:.1f}", "4-quarter trend", "#2f6fb0"),
+    (f"{q_lab(bp_date)} · {bp_val:.1f}" if bp_date is not None else "—",
+     "breaking point (≈ +20% cum. price)", "#c0392b"),
+    ("ALERT — below norm" if alert else "OK — at/above norm",
+     "tolerance vs pre-pivot baseline (100)", "#c0392b" if alert else "#1e7d46"),
+]
+cw = 0.225
+for i, (big, small, col) in enumerate(cards):
+    x = 0.055 + i * (cw + 0.008)
+    fig.patches.append(plt.Rectangle((x, 0.845), cw, 0.075, transform=fig.transFigure,
+                       facecolor="#f4f6f8", edgecolor=col, linewidth=1.4))
+    fig.text(x + cw/2, 0.893, big, fontsize=12.5, fontweight="bold", color=col, ha="center")
+    fig.text(x + cw/2, 0.858, small, fontsize=8, color="#555", ha="center")
+
+# main chart: Zara PTI
+ax1 = fig.add_subplot(gs[:, 0])
+ax1.plot(zara.index, zara.values, marker="o", ms=3.5, lw=1, color="#9fb4c7",
+         label="PTI (quarterly)")
+ax1.plot(trend.index, trend.values, lw=2.4, color="#2f6fb0", label="4-quarter trend")
+ax1.axhline(BASE, color="#444", lw=1, ls="--")
+ax1.text(zara.index[0], BASE + 1.5, "baseline = 100", fontsize=8, color="#444")
+if bp_date is not None:
+    ax1.scatter([bp_date], [bp_val], s=90, facecolor="none",
+                edgecolor="#c0392b", linewidth=2, zorder=5)
+    ax1.annotate(f"breaking point\n{q_lab(bp_date)} · {bp_val:.1f}",
+                 xy=(bp_date, bp_val), xytext=(10, -35),
+                 textcoords="offset points", fontsize=8.5, color="#c0392b",
+                 arrowprops=dict(arrowstyle="->", color="#c0392b"))
+ax1.set_title("Zara — Premiumization Tolerance Index", fontsize=11, fontweight="bold")
+ax1.legend(fontsize=8); ax1.grid(alpha=0.3)
+
+# benchmark chart
+ax2 = fig.add_subplot(gs[0, 1:])
+ax2.plot(trend.index, trend.values, lw=2.2, color="#2f6fb0", label="Zara (4Q trend)")
+ax2.plot(trendh.index, trendh.values, lw=2.2, color="#c0603a", label="H&M (4Q trend)")
+ax2.axhline(BASE, color="#444", lw=1, ls="--")
+ax2.set_title("Active benchmark — each brand vs its own pre-pivot baseline",
+              fontsize=10.5, fontweight="bold")
+ax2.legend(fontsize=8); ax2.grid(alpha=0.3)
+
+# ABSA levers
+ax3 = fig.add_subplot(gs[1, 1:])
+a = absa.sort_values("sentiment")
+cols = ["#c0392b" if v < 0 else "#1e7d46" for v in a["sentiment"]]
+ax3.barh(a["aspect"], a["sentiment"], color=cols, edgecolor="#2c3e50", linewidth=0.5)
+ax3.axvline(0, color="#444", lw=1)
+ax3.set_title("Diagnosis — engagement-weighted sentiment by attribute",
+              fontsize=10.5, fontweight="bold")
+ax3.grid(axis="x", alpha=0.3)
+lo, hi = float(a["sentiment"].min()), float(a["sentiment"].max())
+span = max(hi - lo, 0.1)
+ax3.set_xlim(min(lo, 0) - 0.35 * span, max(hi, 0) + 0.35 * span)
+for y, (v, n) in enumerate(zip(a["sentiment"], a["volume"])):
+    ax3.text(v + (0.012 if v >= 0 else -0.012) * span, y, f"{v:+.2f} · n={n:,}",
+             va="center", ha="left" if v >= 0 else "right", fontsize=7.5)
+
+fig.text(0.055, 0.015,
+         "Operating rules — ALERT: trend < 100 → pause escalation, lead with symbolic "
+         "investment.  BREAKING POINT: first post-pivot quarter < 100 → revealed "
+         "price-elevation budget.", fontsize=8.5, color="#333", style="italic")
+
+png = os.path.join(_DIR, "dashboard.png")
+plt.savefig(png, dpi=150)
+print("Saved:", png)
+
+# ---------- self-contained HTML ----------
+b64 = base64.b64encode(open(png, "rb").read()).decode()
+html = f"""<!doctype html><html><head><meta charset='utf-8'>
+<title>Premiumization Tolerance Dashboard</title></head>
+<body style="margin:0;background:#eceff3;font-family:Segoe UI,Arial,sans-serif">
+<div style="max-width:1250px;margin:18px auto;background:#fff;border-radius:10px;
+box-shadow:0 2px 14px rgba(0,0,0,.12);padding:14px">
+<img src="data:image/png;base64,{b64}" style="width:100%"/>
+<p style="color:#666;font-size:12px;padding:0 8px">Self-contained artefact of the
+Premiumization Tolerance Framework — regenerate each quarter by re-running the
+pipeline and <code>build_dashboard.py</code>.</p></div></body></html>"""
+out = os.path.join(_DIR, "dashboard.html")
+open(out, "w", encoding="utf-8").write(html)
+print("Saved:", out)
